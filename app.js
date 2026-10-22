@@ -1,118 +1,116 @@
-/* RE:ANSAN: local hand tracking + persistent canvas reveal. No image/video uploads. */
-const $=id=>document.getElementById(id);
-document.body.classList.add('in-menu');
-const canvas=$('scene'),ctx=canvas.getContext('2d');
-const past=new Image(),lake=new Image(),wetland=new Image();
-let present=lake;
-let chapter=0,selectedChapter=0,transitioning=false,chapterStart=0,completionTime=0,lastActivity=performance.now();
-let milestone=0,toastUntil=0,dwellTarget=null,dwellStart=0,dwellFired=false;
-const particles=[],ripples=[];
-let soundEnabled=false,audioCtx=null,audioGain=null;
-let secondPoint=null,secondPrevious=null,paused=false,focusEnergy=0,visualLast=null;
-const handTracks=new Map();
-const reducedMotion=matchMedia('(prefers-reduced-motion: reduce)').matches;
-function brushRadius(p){return Math.max(65,Math.min(width,height)*.12)*(p?.focus ? .43 : 1)*(1+focusEnergy*.2);}
-const chapters=[{tag:'WATER / 水的流动',name:'물의 흐름',title:'다시 흐르는 물.',kr:'해수 유통과 수질 개선 사업을 통해 시화호의 수질과 생태환경이 개선되어 왔습니다.',cn:'海水流通与水质改善工程，推动了始华湖的水质改善与生态恢复。',nodes:[['오염의 기록','历史档案：看见环境治理的起点。'],['흐름의 회복','恢复水的流通，是环境改善的重要措施之一。'],['계속되는 노력','环境改善需要长期治理与持续关注。']]},{tag:'WETLAND / 湿地的生命',name:'생명의 자리',title:'생명이 머무는 풍경.',kr:'안산갈대습지는 시화호의 수질 개선을 위해 조성된 인공습지입니다. 물과 식물, 생물이 연결되는 공간을 만나보세요.',cn:'安山芦苇湿地是为改善始华湖水质而建设的人工湿地。水、植物和生物，在这里构成相互联系的生态空间。',nodes:[['물과 식물','湿地植物与水体共同构成生态空间。'],['생물의 보금자리','湿地为多种生物提供栖息环境。'],['함께 지키는 풍경','以日常关注，延续环境恢复的故事。']]}];
-const mask=document.createElement('canvas'),mctx=mask.getContext('2d');
-const layer=document.createElement('canvas'),lctx=layer.getContext('2d');
-let width=0,height=0,mode='idle',point=null,previous=null,handPose=null,stream=null;
-let lastHand=0,lastFrame=0,lastMeasure=0,coverage=0,completed=false,active=false,resourcesReady=false;
-let cameraGeneration=0,modelPromise=null;
-const threshold=.70,gridW=100,gridH=64,visited=new Uint8Array(gridW*gridH);
-let revealCount=0;
-function loadImage(img,url){return new Promise((resolve,reject)=>{img.onload=resolve;img.onerror=()=>reject(new Error(url));img.src=url;});}
-function cover(c,img){const scale=Math.max(width/img.width,height/img.height);c.drawImage(img,(width-img.width*scale)/2,(height-img.height*scale)/2,img.width*scale,img.height*scale);}
-function resize(){const saved=document.createElement('canvas');saved.width=mask.width;saved.height=mask.height;if(saved.width)saved.getContext('2d').drawImage(mask,0,0);width=innerWidth;height=innerHeight;for(const c of[canvas,mask,layer]){c.width=width;c.height=height;}if(saved.width)mctx.drawImage(saved,0,0,width,height);previous=null;}
-function reset(){mctx.clearRect(0,0,width,height);visited.fill(0);revealCount=0;coverage=0;completed=false;completionTime=0;milestone=0;previous=null;point=null;secondPoint=null;secondPrevious=null;focusEnergy=0;visualLast=null;handTracks.clear();setPaused(false);particles.length=0;ripples.length=0;lastActivity=performance.now();$('result').hidden=true;$('toast').hidden=true;$('percent').textContent='0%';$('bar').style.width='0%';$('phase').textContent=chapter===0?'시화호 · 과거의 기록 / 始华湖历史档案':'갈대습지 · 색을 깨우다 / 唤醒湿地色彩';$('guide').hidden=!active;}
-function mark(x,y,r){for(let gy=Math.max(0,Math.floor((y-r)/height*gridH));gy<Math.min(gridH,Math.ceil((y+r)/height*gridH));gy++)for(let gx=Math.max(0,Math.floor((x-r)/width*gridW));gx<Math.min(gridW,Math.ceil((x+r)/width*gridW));gx++){const i=gy*gridW+gx,dx=(gx+.5)/gridW*width-x,dy=(gy+.5)/gridH*height-y;if(!visited[i]&&dx*dx+dy*dy<r*r){visited[i]=1;revealCount++;}}}
-function stamp(x,y,r){const g=mctx.createRadialGradient(x,y,r*.72,x,y,r);g.addColorStop(0,'rgba(255,255,255,.98)');g.addColorStop(1,'rgba(255,255,255,0)');mctx.fillStyle=g;mctx.fillRect(x-r,y-r,2*r,2*r);mark(x,y,r*.85);}
-function paint(p){const radius=brushRadius(p);if(previous){const d=Math.hypot(p.x-previous.x,p.y-previous.y),steps=Math.min(40,Math.ceil(d/(radius*.25)));for(let s=1;s<=steps;s++)stamp(previous.x+(p.x-previous.x)*s/steps,previous.y+(p.y-previous.y)*s/steps,radius);}else stamp(p.x,p.y,radius);previous={...p};if(particles.length<220&&!reducedMotion)for(let i=0;i<(p.focus?4:2);i++)particles.push({x:p.x,y:p.y,vx:(Math.random()-.5)*1.8,vy:-Math.random()*1.8,life:1,size:Math.random()*2+1});}
-function measure(){coverage=revealCount/visited.length;const pct=Math.round(coverage*100);$('percent').textContent=pct+'%';$('bar').style.width=pct+'%';if(milestone<3&&coverage>=[.12,.32,.52][milestone]){const node=chapters[chapter].nodes[milestone];$('toast-no').textContent='0'+(milestone+1);$('toast-title').textContent=node[0];$('toast-copy').textContent=node[1];$('toast').hidden=false;toastUntil=performance.now()+4200;milestone++;chime(220+milestone*110);}if(coverage>=threshold&&!completed){completed=true;completionTime=performance.now();$('result-kicker').textContent='CHAPTER 0'+(chapter+1)+' / REVEALED';$('result-title').textContent=chapters[chapter].title;$('result-kr').textContent=chapters[chapter].kr;$('result-cn').textContent=chapters[chapter].cn;$('next').textContent=chapter===0?'다음 이야기 → / 探索湿地':'장면으로 돌아가기 ↗ / 返回场景';$('result').hidden=false;$('guide').hidden=true;$('toast').hidden=true;$('phase').textContent='회복의 이야기 / 生态恢复的故事';chime(660);}}
-function draw(now){requestAnimationFrame(draw);if(!resourcesReady)return;const dt=Math.min(60,now-lastFrame);lastFrame=now;if(mode==='camera'&&now-lastHand>500){point=null;secondPoint=null;previous=null;secondPrevious=null;$('status').textContent='손바닥을 보여 주세요 / 请举起手掌';}if(point){gestureUI(now);if(active&&!transitioning&&!dwellTarget&&!paused&&!$('sources').open){const speed=visualLast?Math.hypot(point.x-visualLast.x,point.y-visualLast.y):100;focusEnergy=Math.max(0,Math.min(1,focusEnergy+(speed<2?dt/2200:-dt/400)));visualLast={...point};paint(point);if(secondPoint){const primaryPrevious=previous;previous=secondPrevious;paint(secondPoint);secondPrevious=previous;previous=primaryPrevious;}else secondPrevious=null;if(now-lastMeasure>150){measure();lastMeasure=now;}}}else{visualLast=null;focusEnergy=0;}updateTracking();if(active&&now-lastActivity>90000){showMenu();$('status').textContent='다시 시작해 보세요 / 欢迎再次体验';}if(now>toastUntil)$('toast').hidden=true;
-ctx.clearRect(0,0,width,height);ctx.filter='grayscale(1) brightness(.65)';cover(ctx,active?(chapter===0?past:wetland):lake);ctx.filter='none';lctx.clearRect(0,0,width,height);cover(lctx,present);lctx.globalCompositeOperation='destination-in';lctx.drawImage(mask,0,0);lctx.globalCompositeOperation='source-over';ctx.drawImage(layer,0,0);if(completed){ctx.globalAlpha=Math.min(1,(now-completionTime)/2600);cover(ctx,present);ctx.globalAlpha=1;}
-const shade=ctx.createLinearGradient(0,0,0,height);shade.addColorStop(0,'rgba(0,9,8,.7)');shade.addColorStop(.25,'rgba(0,9,8,0)');shade.addColorStop(.75,'rgba(0,9,8,0)');shade.addColorStop(1,'rgba(0,9,8,.8)');ctx.fillStyle=shade;ctx.fillRect(0,0,width,height);if(!active){ctx.fillStyle='rgba(0,8,7,.40)';ctx.fillRect(0,0,width,height);}if(!paused&&!reducedMotion)effects(now,dt);for(const p of[point,secondPoint])if(p){const r=active?brushRadius(p):24;ctx.save();ctx.shadowBlur=24+focusEnergy*25;ctx.shadowColor=p.focus?'#a7efff':'#daffc4';ctx.strokeStyle=p.focus?'#b5f0ff':'#e7ffcd';ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(p.x,p.y,r*.83,0,Math.PI*2);ctx.stroke();ctx.setLineDash([4,12]);ctx.beginPath();ctx.arc(p.x,p.y,r*.93,now/1500,now/1500+Math.PI*2);ctx.stroke();ctx.setLineDash([]);ctx.globalAlpha=focusEnergy*.4;ctx.beginPath();ctx.arc(p.x,p.y,r*(1.1+Math.sin(now/700)*.04),0,Math.PI*2);ctx.stroke();ctx.globalAlpha=1;ctx.fillStyle='#edffdd';ctx.beginPath();ctx.arc(p.x,p.y,3,0,Math.PI*2);ctx.fill();ctx.restore();}if(secondPoint&&point&&active){ctx.save();ctx.strokeStyle='#d8efb944';ctx.setLineDash([2,8]);ctx.beginPath();ctx.moveTo(point.x,point.y);ctx.quadraticCurveTo((point.x+secondPoint.x)/2,(point.y+secondPoint.y)/2-70,secondPoint.x,secondPoint.y);ctx.stroke();ctx.restore();}}
-function startMode(next){document.body.classList.remove('in-menu');mode=next;active=true;chapter=selectedChapter;present=chapter===0?lake:wetland;chapterStart=performance.now();$('welcome').hidden=true;$('chapters').hidden=false;$('chapter-index').textContent='0'+(chapter+1);$('chapter-tag').textContent=chapters[chapter].tag;$('chapter-name').textContent=chapters[chapter].name;$('guide').hidden=false;$('status').textContent=next==='mouse'?'마우스 체험 / 鼠标体验':'손 인식 중 / 正在识别手掌';reset();}
-function stopCamera(){cameraGeneration++;if(handPose){try{handPose.detectStop();}catch{}}if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;$('video').srcObject=null;}
-function loadModel(){
-  if(modelPromise)return modelPromise;
-  modelPromise=new Promise((resolve,reject)=>{
-    const script=document.createElement('script');script.src='vendor/ml5.min.js';
-    script.onerror=()=>reject(new Error('识别库加载失败'));
-    script.onload=()=>{try{handPose=ml5.handPose({runtime:'mediapipe',modelType:'full',maxHands:2,solutionPath:new URL('vendor/hands/',document.baseURI).href},()=>resolve(handPose));}catch(e){reject(e);}};
-    document.head.appendChild(script);
-  });return modelPromise;
+import {sites,messages} from './data.js';
+import {HandController,createModel,clamp} from './hand.js';
+import {LightTrail} from './effects.js';
+import {initSatellite} from './satellite.js';
+initSatellite();
+const trail=new LightTrail();
+const $=id=>document.getElementById(id),canvas=$('scene'),ctx=canvas.getContext('2d'),stage=$('stage');
+let lang=localStorage.getItem('re2-language')==='zh'?'zh':'ko',site=sites[0],progress=0,index=0,phase='observe',phaseElapsed=0,lastFrame=0,active=false,dragging=false,recordChanged=0,lastInput=0;
+let handPoint=null,dwell=null,dwellAt=0,dwellFired=false,statusKey='ready',statusExtra='',loadGeneration=0;
+const cache=new Map(),visited=new Set(),reduced=matchMedia('(prefers-reduced-motion: reduce)');
+const options={motion:!reduced.matches,sound:false,preview:true,mirror:true,range:.8};
+const tr=v=>typeof v==='string'?v:v?.[lang]||'',t=k=>messages[lang][k]||k;
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const date=r=>r.date.replace('T',' · ')+(r.dateKind==='publication'?(lang==='ko'?' · 자료 공개':' · 资料公开'):''),current=()=>site.records[index];
+let audio=null,audioGain=null,checking=false,activity=performance.now();
+function setStatus(key,extra='',error=false){statusKey=key;statusExtra=extra;const text=t(key)+(extra?' · '+extra:'');$('status').textContent=text;$('engine').textContent=error?t('engineFail'):hands.active?'HAND / '+hands.delegate:t('local');$('status').classList.toggle('status-error',error);}
+function localImage(r){if(cache.has(r.path))return Promise.resolve(cache.get(r.path));return new Promise((resolve,reject)=>{const im=new Image();im.onload=()=>{cache.set(r.path,im);resolve(im);};im.onerror=()=>reject(Error(r.path));im.src=r.path;});}
+function home(){trail.clear();loadGeneration++;active=false;dragging=false;$('home').hidden=false;$('experience').hidden=true;$('handCursor').hidden=!hands.active;setSoundGain(false);if($('dialog').open)$('dialog').close();renderCards();}
+function renderCards(){
+ $('siteCards').innerHTML=sites.map(s=>`<button class="site-card" data-site="${s.id}"><img src="${s.cover}" alt="${esc(tr(s.name))}"><div class="card-content"><small>${s.tag}${visited.has(s.id)?' / ✓':''}</small><h2>${esc(tr(s.name))}</h2><p>${esc(tr(s.subtitle))}</p></div></button>`).join('');
+ document.querySelectorAll('[data-site]').forEach(b=>b.onclick=()=>openSite(b.dataset.site));
 }
-function handleHands(results){
-  if(mode!=='camera')return;
-  const usable=[],seen=new Set();
-  for(let i=0;i<Math.min(2,results.length);i++){
-    const hand=results[i],kp=hand.keypoints;if(!kp||kp.length<21)continue;
-    const wrist=kp[0],dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
-    const palmSize=Math.max(20,dist(wrist,kp[9]));
-    const focus=dist(kp[4],kp[8])/palmSize<.38;
-    const open=[8,12,16,20].filter(j=>dist(kp[j],wrist)>dist(kp[j-2],wrist)*1.12).length>=3;
-    if(!open&&!focus)continue;
-    const center=focus?{x:(kp[4].x+kp[8].x)/2,y:(kp[4].y+kp[8].y)/2}:[0,5,9,13,17].reduce((a,j)=>({x:a.x+kp[j].x/5,y:a.y+kp[j].y/5}),{x:0,y:0});
-    const target={x:Math.max(0,Math.min(width,(1-center.x/($('video').videoWidth||640))*width)),y:Math.max(0,Math.min(height,center.y/($('video').videoHeight||480)*height)),focus};
-    const key=typeof hand.handedness==='string'?hand.handedness:String(i),old=handTracks.get(key);
-    const p=old?{x:old.x+(target.x-old.x)*.28,y:old.y+(target.y-old.y)*.28,focus}:target;p.id=key;
-    handTracks.set(key,p);seen.add(key);usable.push(p);
-  }
-  for(const key of handTracks.keys())if(!seen.has(key))handTracks.delete(key);
-  usable.sort((a,b)=>a.id.localeCompare(b.id));
-  if(point?.id!==usable[0]?.id)previous=null;
-  if(secondPoint?.id!==usable[1]?.id)secondPrevious=null;
-  point=usable[0]||null;secondPoint=usable[1]||null;
-  if(!point){previous=null;secondPrevious=null;return;}
-  lastHand=performance.now();lastActivity=lastHand;
-  $('status').textContent=usable.length===2?'두 손 연결됨 / 双手光场已连接':point.focus?'집중의 빛 / 聚光模式':'손바닥 인식됨 / 已识别手掌';
+function language(){
+ $('closeDialog').setAttribute('aria-label',t('close'));stage.setAttribute('aria-label',t('stageLabel'));$('timeline').setAttribute('aria-label',t('timelineLabel'));$('video').setAttribute('aria-label',t('cameraPreviewLabel'));document.querySelector('.map-art').setAttribute('aria-label',t('mapLabel'));
+ document.documentElement.lang=lang==='ko'?'ko':'zh-CN';document.querySelectorAll('[data-i18n]').forEach(el=>el.textContent=t(el.dataset.i18n));$('language').textContent=lang==='ko'?'中文':'한국어';
+ renderCards();if(active){renderLabels();renderRecords();}setStatus(statusKey,statusExtra);$('cameraBtn').textContent=t(hands.active?'stop':'camera');
 }
-async function startCamera(){
-  if(!resourcesReady)return;
-  if(!window.isSecureContext||!navigator.mediaDevices){$('message').textContent='摄像头需 HTTPS 或 localhost。请使用鼠标体验，或按说明启动本地服务器。';return;}
-  $('camera').disabled=true;const generation=++cameraGeneration;$('message').textContent='正在加载本地手势模型并请求摄像头权限…';
-  try{
-    stream=await navigator.mediaDevices.getUserMedia({video:{width:640,height:480,facingMode:'user'},audio:false});
-    if(generation!==cameraGeneration){stream.getTracks().forEach(t=>t.stop());return;}
-    $('video').srcObject=stream;await $('video').play();await loadModel();
-    if(generation!==cameraGeneration)return;
-    startMode('camera');handPose.detectStart($('video'),handleHands);
-  }catch(e){stopCamera();$('message').textContent='摄像头或识别启动失败：'+e.message+'。可点击“鼠标体验”继续。';}
-  finally{$('camera').disabled=false;}
+async function openSite(id){
+ const generation=++loadGeneration;site=sites.find(s=>s.id===id)||sites[0];active=false;$('home').hidden=true;$('experience').hidden=false;$('status').textContent=t('loadingImages');$('scene').style.opacity='.3';
+ try{await Promise.all(site.records.map(localImage));if(generation!==loadGeneration)return;active=true;reset();renderRecords();$('scene').style.opacity='1';resize();setStatus(hands.active?'detected':'ready');window.scrollTo({top:0,behavior:'instant'});}catch(e){if(generation===loadGeneration){setStatus('imageError',e.message,true);$('scene').style.opacity='1';}}
 }
-function effects(now,dt){ctx.save();ctx.globalCompositeOperation='screen';for(let i=0;i<35;i++){const x=((i*137.51+Math.sin(now/6500+i)*30)%width+width)%width,y=(i*87.31-now*.008)%height;ctx.globalAlpha=.12+.10*Math.sin(now/1400+i);ctx.fillStyle='#d5ebc2';ctx.beginPath();ctx.arc(x,(y+height)%height,1.2,0,7);ctx.fill();}for(let i=particles.length-1;i>=0;i--){const p=particles[i];p.x+=p.vx*dt/16;p.y+=p.vy*dt/16;p.life-=dt/1700;if(p.life<=0){particles.splice(i,1);continue;}ctx.globalAlpha=p.life*.65;ctx.shadowBlur=12;ctx.shadowColor='#dcfac1';ctx.fillStyle='#e4fcd1';ctx.beginPath();ctx.arc(p.x,p.y,p.size*p.life,0,7);ctx.fill();}for(let i=ripples.length-1;i>=0;i--){const r=ripples[i];r.age+=dt;if(r.age>1800){ripples.splice(i,1);continue;}ctx.globalAlpha=(1-r.age/1800)*.35;ctx.strokeStyle='#dafcc7';ctx.lineWidth=1;ctx.beginPath();ctx.ellipse(r.x,r.y,15+r.age*.12,8+r.age*.045,0,0,7);ctx.stroke();}if(point&&active&&Math.floor(now/650)!==Math.floor((now-dt)/650))ripples.push({x:point.x,y:point.y,age:0});ctx.restore();}
-function gestureUI(now){if(mode!=='camera'||!point||$('sources').open){$('dwell').hidden=true;dwellTarget=null;return;}const hit=document.elementFromPoint(point.x,point.y)?.closest('button.gesture');if(hit&&!hit.disabled){if(hit!==dwellTarget){dwellTarget=hit;dwellStart=now;dwellFired=false;}$('dwell').hidden=false;$('dwell').style.left=point.x+'px';$('dwell').style.top=point.y+'px';$('dwell').style.setProperty('--progress',Math.min(1,(now-dwellStart)/1250));if(!dwellFired&&now-dwellStart>1250){dwellFired=true;hit.click();}}else{dwellTarget=null;$('dwell').hidden=true;}}
-function showMenu(){document.body.classList.add('in-menu');active=false;transitioning=false;reset();$('welcome').hidden=false;$('chapters').hidden=true;$('guide').hidden=true;$('transition').hidden=true;$('message').textContent='本地手势识别 · 不上传摄像头画面';$('phase').textContent='SELECT A CHAPTER / 选择环境故事';}
-function selectChapter(i){selectedChapter=i;document.querySelectorAll('[data-scene]').forEach(b=>b.classList.toggle('selected',Number(b.dataset.scene)===i));if(mode==='camera'&&stream){startMode('camera');}}
-async function nextChapter(){if(chapter===1){showMenu();return;}if(transitioning)return;transitioning=true;$('transition-num').textContent='02';$('transition-title').textContent=chapters[1].name;$('transition').hidden=false;$('result').hidden=true;await new Promise(r=>setTimeout(r,1600));if(!transitioning)return;selectedChapter=1;startMode(mode);transitioning=false;$('transition').hidden=true;}
-async function toggleSound(){if(!audioCtx){audioCtx=new AudioContext();audioGain=audioCtx.createGain();audioGain.gain.value=0;audioGain.connect(audioCtx.destination);const buffer=audioCtx.createBuffer(1,audioCtx.sampleRate*3,audioCtx.sampleRate),data=buffer.getChannelData(0);let last=0;for(let i=0;i<data.length;i++){last=(last+.025*(Math.random()*2-1))/1.025;data[i]=last*3;}const noise=audioCtx.createBufferSource();noise.buffer=buffer;noise.loop=true;const filter=audioCtx.createBiquadFilter();filter.type='lowpass';filter.frequency.value=420;noise.connect(filter).connect(audioGain);noise.start();}await audioCtx.resume();soundEnabled=!soundEnabled;audioGain.gain.setTargetAtTime(soundEnabled?.18:0,audioCtx.currentTime,.4);$('sound').textContent=soundEnabled?'◉ SOUND ON':'◌ SOUND OFF';$('sound').setAttribute('aria-pressed',String(soundEnabled));}
-function chime(freq){if(!soundEnabled||!audioCtx)return;const o=audioCtx.createOscillator(),g=audioCtx.createGain();o.type='sine';o.frequency.value=freq;g.gain.setValueAtTime(.0001,audioCtx.currentTime);g.gain.exponentialRampToValueAtTime(.06,audioCtx.currentTime+.04);g.gain.exponentialRampToValueAtTime(.0001,audioCtx.currentTime+1.3);o.connect(g).connect(audioCtx.destination);o.start();o.stop(audioCtx.currentTime+1.4);}
-function setPaused(value){paused=value;$('pause-overlay').hidden=!value;$('pause').textContent=value?'▶ 继续':'Ⅱ 暂停';$('pause').setAttribute('aria-pressed',String(value));previous=null;secondPrevious=null;lastActivity=performance.now();}
-function updateTracking(){
-  $('interaction-legend').hidden=!active||completed;
-  $('hand-feedback').hidden=!active;
-  $('guide').hidden=!active||completed||paused;
-  const text=mode==='mouse'?(point?.focus?'FOCUS / 聚光 · 松开 Shift 扩散':'MOUSE / 移动探索 · 按住 Shift 聚光'):secondPoint?'TWO HANDS / 双手共同照亮':point?.focus?'FOCUS / 指尖聚光':point?'PALM / 手掌光场':'WAITING / 请举起手掌';
-  if($('tracking-copy').textContent!==text)$('tracking-copy').textContent=text;
+function reset(){trail.clear();progress=0;index=0;phase='observe';phaseElapsed=0;recordChanged=performance.now();lastInput=recordChanged;$('timeline').value=0;$('completion').hidden=true;setSoundGain(false);renderLabels();}
+function input(value){
+ if(!active||$('dialog').open)return;
+ const now=performance.now();activity=now;if(phase==='observe'&&phaseElapsed<1200)return;
+ const p=clamp(value);if(Math.abs(p-progress)>.002)lastInput=now;
+ progress=p;$('timeline').value=Math.round(p*1000);
+ const next=Math.min(site.records.length-1,Math.floor(p*site.records.length));
+ if(next!==index){index=next;recordChanged=now;trail.burst();}
+ if(index<site.records.length-1){phase='explore';phaseElapsed=0;$('completion').hidden=true;setSoundGain(false);}
+ else if(!['settle','flow'].includes(phase)){phase='settle';phaseElapsed=0;}
+ else if(phase==='flow'&&now-lastInput<120){phase='settle';phaseElapsed=0;$('completion').hidden=true;setSoundGain(false);}
+ renderLabels();
 }
-function savePostcard(){
-  const out=document.createElement('canvas');out.width=1920;out.height=1080;const c=out.getContext('2d');
-  c.fillStyle='#07110e';c.fillRect(0,0,1920,1080);c.drawImage(present,70,70,1780,714);
-  c.fillStyle='#d9edba';c.font='24px sans-serif';c.fillText('RE:ANSAN / 빛으로 다시 보는 시화호',75,845);
-  c.fillStyle='#eff5eb';c.font='38px sans-serif';c.fillText(chapters[chapter].title,75,905);
-  c.fillStyle='#b4c3b8';c.font='19px sans-serif';c.fillText('本地互动体验纪念 · 真实场景照片，不代表同机位历史复原',75,959);
-  c.font='16px sans-serif';c.fillText('照片来源：安山市文化旅游官网 / ansan.go.kr/tourinfo',75,1010);
-  out.toBlob(blob=>{if(!blob)return;const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='RE-ANSAN-chapter-'+(chapter+1)+'.png';a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);},'image/png');
+function renderLabels(){
+ if($('stageNext'))$('stageNext').textContent=site===sites.at(-1)?t('backMap'):t('next');
+ const r=current();$('siteNumber').textContent=site.tag;$('siteName').textContent=tr(site.name);$('year').textContent=r.date.slice(0,4);$('period').textContent=r.date.slice(5,10).replace('-','.');$('event').textContent=tr(r.title);$('hint').textContent=t('hint');$('firstDate').textContent=date(site.records[0]);$('lastDate').textContent=date(site.records.at(-1));$('currentDate').textContent=date(r);$('sequenceStatus').textContent=t(phase);$('recordCredit').textContent=`${r.credit} / ${r.license} · ${tr(r.dateBasis)}`;$('evidenceNote').textContent=tr(site.note);$('completionTitle').textContent=tr(site.title);$('completionCopy').textContent=tr(site.copy);$('nextBtn').textContent=site===sites.at(-1)?t('backMap'):t('next');
+ if(r.dateKind==='publication')$('period').textContent+=(lang==='ko'?' · 공개':' · 资料公开');
+ document.querySelectorAll('[data-record]').forEach(b=>b.setAttribute('aria-pressed',String(+b.dataset.record===index)));
 }
-$('pause').onclick=()=>setPaused(!paused);$('resume').onclick=()=>setPaused(false);$('postcard').onclick=savePostcard;
-document.addEventListener('keydown',e=>{if(e.code==='Space'&&active&&!$('sources').open&&!/BUTTON|INPUT|TEXTAREA/.test(document.activeElement.tagName)){e.preventDefault();setPaused(!paused);}if(e.key==='Shift'&&mode==='mouse'&&point)point.focus=true;});
-document.addEventListener('keyup',e=>{if(e.key==='Shift'&&point)point.focus=false;});
-document.querySelectorAll('.scene-card').forEach(card=>{card.addEventListener('pointermove',e=>{if(reducedMotion)return;const r=card.getBoundingClientRect();card.style.setProperty('--rx',((e.clientY-r.top)/r.height-.5)*-6+'deg');card.style.setProperty('--ry',((e.clientX-r.left)/r.width-.5)*7+'deg');});card.addEventListener('pointerleave',()=>{card.style.setProperty('--rx','0deg');card.style.setProperty('--ry','0deg');});});
-document.querySelectorAll('[data-scene]').forEach(b=>b.onclick=()=>selectChapter(Number(b.dataset.scene)));$('menu').onclick=showMenu;$('next').onclick=nextChapter;$('sound').onclick=()=>toggleSound().catch(()=>{$('status').textContent='请点击音效按钮启用声音';});$('source-button').onclick=()=>$('sources').showModal();$('close-sources').onclick=()=>$('sources').close();document.addEventListener('pointermove',()=>lastActivity=performance.now());document.addEventListener('pointerdown',()=>lastActivity=performance.now());document.addEventListener('keydown',()=>lastActivity=performance.now());
-$('camera').onclick=()=>{if(mode==='camera'&&stream)startMode('camera');else startCamera();};$('mouse').onclick=()=>{stopCamera();startMode('mouse');};$('reset').onclick=()=>reset();$('again').onclick=()=>reset();$('fullscreen').onclick=async()=>{try{if(document.fullscreenElement)await document.exitFullscreen();else await document.documentElement.requestFullscreen();}catch{$('status').textContent='浏览器不支持全屏';}};
-canvas.addEventListener('pointermove',e=>{if(mode==='mouse')point={x:e.clientX,y:e.clientY,focus:e.shiftKey};});canvas.addEventListener('pointerdown',e=>{if(mode==='mouse'){canvas.setPointerCapture(e.pointerId);point={x:e.clientX,y:e.clientY,focus:e.shiftKey};}});canvas.addEventListener('pointerleave',()=>{if(mode==='mouse'){point=null;previous=null;}});canvas.addEventListener('pointerup',e=>{if(e.pointerType!=='mouse'){point=null;previous=null;}});window.addEventListener('resize',resize);window.addEventListener('beforeunload',stopCamera);document.addEventListener('keydown',e=>{if(e.key==='Escape')reset();if(e.key.toLowerCase()==='r')reset();});
-resize();$('camera').disabled=$('mouse').disabled=true;Promise.all([loadImage(past,'assets/past.jpg'),loadImage(lake,'assets/lake-hd.jpg'),loadImage(wetland,'assets/wetland-hd.jpg')]).then(()=>{resourcesReady=true;$('camera').disabled=$('mouse').disabled=false;}).catch(()=>{$('message').textContent='照片加载失败，请通过本地服务器运行并检查 assets 目录。';});requestAnimationFrame(draw);
-// Expose read-only state for automated smoke checks.
-window.reAnsanState=()=>({mode,coverage,completed,resourcesReady,chapter,active,transitioning,paused,hands:Number(!!point)+Number(!!secondPoint),focused:!!point?.focus});
-window.reAnsanVisual=()=>({active:active&&!paused,light:point?{x:point.x/width,y:1-point.y/height}:null,second:secondPoint?{x:secondPoint.x/width,y:1-secondPoint.y/height}:null,energy:focusEnergy,reducedMotion});
-setInterval(()=>{if(mode==='camera'&&point&&performance.now()-lastHand<500)lastActivity=performance.now();},1000);
+function renderRecords(){
+ $('recordDots').innerHTML=site.records.map((r,i)=>`<button data-record="${i}" aria-pressed="${i===index}" title="${esc(tr(r.title))}">${esc(date(r))}</button>`).join('');
+ $('recordDots').querySelectorAll('button').forEach(b=>b.onclick=()=>{phaseElapsed=Math.max(1200,phaseElapsed);input(+b.dataset.record/(site.records.length-1));});
+}
+function resize(){const r=stage.getBoundingClientRect(),d=Math.min(2,devicePixelRatio||1);canvas.width=Math.round(r.width*d);canvas.height=Math.round(r.height*d);}
+new ResizeObserver(resize).observe(stage);
+function fit(im){const w=canvas.width,h=canvas.height,s=Math.max(w/im.width,h/im.height);return {x:(w-im.width*s)/2,y:(h-im.height*s)/2,w:im.width*s,h:im.height*s};}
+function path(poly,r){ctx.beginPath();poly.forEach(([x,y],i)=>i?ctx.lineTo(r.x+x*r.w,r.y+y*r.h):ctx.moveTo(r.x+x*r.w,r.y+y*r.h));ctx.closePath();}
+function motion(im,r,now){
+ const fade=Math.min(1,phaseElapsed/1800),scale=canvas.width/stage.clientWidth;
+ for(const poly of current().water){
+  ctx.save();path(poly,r);ctx.clip();ctx.globalAlpha=fade;
+  for(let y=0;y<r.h;y+=3){const sy=y/r.h*im.height,sh=Math.min(3,r.h-y);const dx=(Math.sin(y*.045-now*.0013)+Math.sin(y*.017+now*.0007))*scale*1.5;ctx.drawImage(im,0,sy,im.width,sh/r.h*im.height,r.x+dx,r.y+y,r.w,sh+.3);}
+  ctx.globalCompositeOperation='screen';
+  for(let j=0;j<40;j++){const x=(Math.sin(j*72.1)*.5+.5)*r.w+r.x,y=(.4+(j*.137% .6))*r.h+r.y;ctx.globalAlpha=Math.max(0,Math.sin(now*.0012+j*2.7))*.12*fade;ctx.fillStyle='#d4fff0';ctx.fillRect(x+Math.sin(now*.001+j)*4*scale,y,3*scale,scale);}
+  ctx.shadowBlur=0;ctx.strokeStyle='#c9fff0';ctx.lineWidth=scale*.75;
+  for(let j=0;j<12;j++){const x=r.x+(j*.173%1)*r.w,y=r.y+(.25+j*.061% .7)*r.h,life=(now*.00012+j*.137)%1;ctx.globalAlpha=(1-life)*.13*fade;ctx.beginPath();ctx.ellipse(x,y,8*scale+life*42*scale,2*scale+life*9*scale,0,0,Math.PI*2);ctx.stroke();}
+  ctx.restore();
+ }
+ for(const poly of current().reeds){ctx.save();path(poly,r);ctx.clip();ctx.globalAlpha=fade;for(let y=0;y<r.h;y+=2){const dx=Math.sin(now*.0012+y*.016)*scale*3;ctx.drawImage(im,0,y/r.h*im.height,im.width,Math.min(2,r.h-y)/r.h*im.height,r.x+dx,r.y+y,r.w,2.3);}ctx.restore();}
+}
+function draw(now){
+ requestAnimationFrame(draw);const dt=Math.min(80,now-lastFrame||16);lastFrame=now;
+ if(!active||document.hidden)return;
+ if(now-activity>90000){home();return;}
+ if(!$('dialog').open){phaseElapsed+=dt;if(phase==='observe'&&phaseElapsed>=1200){phase='explore';phaseElapsed=0;renderLabels();}if(phase==='settle'&&phaseElapsed>=1500&&now-lastInput>=900){phase='flow';phaseElapsed=0;trail.clear();visited.add(site.id);$('completion').hidden=false;renderLabels();setSoundGain(true);}}
+ const im=cache.get(current().path);if(!im)return;
+ ctx.fillStyle='#071018';ctx.fillRect(0,0,canvas.width,canvas.height);const r=fit(im);ctx.save();ctx.globalAlpha=reduced.matches?1:Math.min(1,.3+(now-recordChanged)/450);ctx.drawImage(im,r.x,r.y,r.w,r.h);ctx.restore();
+ if(phase==='flow'&&options.motion&&!reduced.matches&&!$('dialog').open)motion(im,r,now);
+ const shade=ctx.createLinearGradient(0,0,0,canvas.height);shade.addColorStop(0,'#00101988');shade.addColorStop(.25,'#00101900');shade.addColorStop(.75,'#00101900');shade.addColorStop(1,'#00101999');ctx.fillStyle=shade;ctx.fillRect(0,0,canvas.width,canvas.height);
+ trail.draw(ctx,canvas.width,canvas.height,dt,options.motion&&!reduced.matches&&!$('dialog').open&&phase!=='flow');
+ $('motionBadge').hidden=phase!=='flow'||!options.motion||reduced.matches;$('sweep').hidden=phase==='flow'||phase==='settle'||phase==='observe';$('sweep').style.left=progress*100+'%';
+}
+function pointer(e){const r=stage.getBoundingClientRect();phaseElapsed=Math.max(1200,phaseElapsed);trail.emit(clamp((e.clientX-r.left)/r.width),clamp((e.clientY-r.top)/r.height),performance.now());input((e.clientX-r.left)/r.width);}
+stage.addEventListener('pointerdown',e=>{if(e.target.closest('button'))return;dragging=true;stage.setPointerCapture(e.pointerId);pointer(e);});stage.addEventListener('pointermove',e=>{if(dragging)pointer(e);});stage.addEventListener('pointerup',()=>dragging=false);stage.addEventListener('pointercancel',()=>dragging=false);
+$('timeline').oninput=e=>{phaseElapsed=Math.max(1200,phaseElapsed);input(+e.target.value/1000);};
+function onHand(p){
+ handPoint=p;$('handDot').hidden=!p||!active;$('handCursor').hidden=!p;if(p)activity=performance.now();
+ if(!p){dwell=null;$('skeleton').hidden=true;return;}
+ const box=active&&!$('dialog').open?stage.getBoundingClientRect():{x:0,y:0,width:innerWidth,height:innerHeight};
+ const x=box.x+p.x*box.width,y=box.y+p.y*box.height;$('handCursor').style.left=x+'px';$('handCursor').style.top=y+'px';$('handDot').style.left=p.x*100+'%';$('handDot').style.top=p.y*100+'%';
+ if(options.preview&&active){const sk=$('skeleton');sk.hidden=false;sk.width=290;sk.height=218;const c=sk.getContext('2d');c.clearRect(0,0,290,218);c.strokeStyle='#a9f2d8';c.lineWidth=2;for(const finger of [[0,1,2,3,4],[0,5,6,7,8],[0,9,10,11,12],[0,13,14,15,16],[0,17,18,19,20]]){c.beginPath();finger.forEach((i,j)=>{const q=p.points[i],px=(options.mirror?1-q.x:q.x)*290,py=q.y*218;j?c.lineTo(px,py):c.moveTo(px,py);});c.stroke();}}
+ const hit=document.elementFromPoint(x,y)?.closest('button');
+ if(hit&&!hit.disabled){const now=performance.now();if(dwell!==hit){dwell=hit;dwellAt=now;dwellFired=false;}const ratio=clamp((now-dwellAt)/1200);$('handCursor').style.setProperty('--dwell',ratio);if(ratio===1&&!dwellFired){dwellFired=true;hit.click();}}
+ else{dwell=null;$('handCursor').style.setProperty('--dwell',0);if(active&&!$('dialog').open&&phase!=='observe'){trail.emit(p.x,p.y,performance.now());input(p.x);}}
+}
+const hands=new HandController({video:$('video'),onPoint:onHand,onStatus:(key,extra)=>setStatus(key,extra),onActive:(yes,delegate)=>{$('cameraBtn').disabled=false;$('cameraBtn').textContent=t(yes?'stop':'camera');$('video').classList.toggle('show',yes&&options.preview&&active);$('engine').textContent=yes?'HAND / '+delegate:t('local');if(!yes)$('skeleton').hidden=true;},onError:e=>{const key=e.code==='secure'?'secure':({NotAllowedError:'denied',NotFoundError:'noCamera',NotReadableError:'busyCamera'}[e.name]||'cameraOther');setStatus(key,e.code==='secure'?'':String(e.message).slice(0,160),true);}});
+async function toggleCamera(){if(checking)return;if(hands.active||hands.loading){hands.stop();return;}$('cameraBtn').disabled=true;await hands.start();}
+async function checkModel(){
+ if(hands.active||hands.loading){setStatus('detected');return;}
+ checking=true;$('checkBtn').disabled=$('cameraBtn').disabled=true;setStatus('checking');let model;
+ try{const result=await createModel(d=>{$('engine').textContent='MODEL / '+d;});model=result.instance;const sample=document.createElement('canvas');sample.width=sample.height=256;sample.getContext('2d').fillRect(0,0,256,256);model.detectForVideo(sample,performance.now());setStatus('engineOK',result.delegate);$('engine').textContent='MODEL OK / '+result.delegate;}catch(e){setStatus('engineFail',String(e.message).slice(0,180),true);}finally{model?.close();checking=false;$('checkBtn').disabled=$('cameraBtn').disabled=false;}
+}
+function showDialog(html){$('dialogContent').innerHTML=html;$('dialog').showModal();setSoundGain(false);}
+function sources(){showDialog(`<p class="eyebrow">PHOTO ARCHIVE / ${site.tag}</p><h2>${esc(t('credits'))}</h2><p>${esc(tr(site.note))}</p><div class="archive-grid">${site.records.map(r=>`<article class="record"><img src="${r.path}" alt="${esc(tr(r.title))}"><h3>${esc(date(r))}</h3><p>${esc(tr(r.title))}<br>${esc(r.credit)}<br>${esc(r.license)}<br>${esc(tr(r.dateBasis))}</p><a href="${r.source}" target="_blank" rel="noopener">${esc(t('sources'))} ↗</a>${r.licenseUrl?` · <a href="${r.licenseUrl}" target="_blank" rel="noopener">LICENSE ↗</a>`:''}</article>`).join('')}</div><p><a href="${site.history}" target="_blank" rel="noopener">${esc(tr(site.name))} / SOURCE ↗</a></p>`);}
+function compare(){const pair=[site.records[0],site.records.at(-1)];showDialog(`<h2>${esc(t('comparisonTitle'))}</h2><p>${esc(tr(site.note))}</p><div class="comparison">${pair.map(r=>`<article><img src="${r.path}" alt="${esc(tr(r.title))}"><h3>${esc(date(r))}</h3><p>${esc(tr(r.title))}<br>${esc(r.credit)} / ${esc(r.license)}</p><a href="${r.source}" target="_blank" rel="noopener">SOURCE ↗</a></article>`).join('')}</div>`);}
+function settings(){showDialog(`<h2>${esc(t('settingsTitle'))}</h2><p>${esc(t('privacy'))}</p>${['motion','sound','preview','mirror'].map(k=>`<label class="settings-row"><span>${esc(t(k))}</span><input type="checkbox" data-setting="${k}" ${options[k]?'checked':''} ${k==='motion'&&reduced.matches?'disabled':''}></label>`).join('')}<label class="settings-row"><span>${esc(t('sensitivity'))}</span><select id="rangeSetting"><option value="1">100%</option><option value="0.8">80%</option><option value="0.6">60%</option></select></label><p>${esc(t('checkHint'))}</p>`);$('rangeSetting').value=options.range;document.querySelectorAll('[data-setting]').forEach(el=>el.onchange=async()=>{options[el.dataset.setting]=el.checked;hands.mirror=options.mirror;$('video').style.transform=options.mirror?'scaleX(-1)':'none';$('video').classList.toggle('show',hands.active&&active&&options.preview);if(!options.preview)$('skeleton').hidden=true;if(el.dataset.setting==='sound')await enableSound();});$('rangeSetting').onchange=e=>{options.range=+e.target.value;hands.range=options.range;};}
+async function enableSound(){if(options.sound&&!audio){audio=new AudioContext();audioGain=audio.createGain();audioGain.gain.value=0;const buffer=audio.createBuffer(1,audio.sampleRate*4,audio.sampleRate),data=buffer.getChannelData(0);let prev=0;for(let i=0;i<data.length;i++){prev=(prev+.022*(Math.random()*2-1))/1.022;data[i]=prev;}const src=audio.createBufferSource();src.buffer=buffer;src.loop=true;const filter=audio.createBiquadFilter();filter.type='lowpass';filter.frequency.value=550;src.connect(filter).connect(audioGain).connect(audio.destination);src.start();}if(audio)await audio.resume();setSoundGain(active&&phase==='flow'&&!$('dialog').open);}
+function setSoundGain(yes){if(audioGain)audioGain.gain.setTargetAtTime((yes&&options.sound)?0.18:0,audio.currentTime,.8);}
+function save(){const im=cache.get(current().path);if(!im)return;const out=document.createElement('canvas');out.width=1920;out.height=1200;const c=out.getContext('2d');c.fillStyle='#08141a';c.fillRect(0,0,out.width,out.height);const s=Math.min(1800/im.width,900/im.height);c.drawImage(im,(1920-im.width*s)/2,40,im.width*s,im.height*s);c.fillStyle='#d7f3e4';c.font='26px sans-serif';c.fillText(`RE:ANSAN / ${tr(site.name)} / ${date(current())}`,60,1010);c.font='17px sans-serif';c.fillStyle='#a7c8bd';const r=current();c.fillText(`${r.credit} / ${r.license}`,60,1050);c.font='12px sans-serif';c.fillText(r.source,60,1090);c.fillText(r.licenseUrl||t('local'),60,1120);c.fillText(tr(site.note).slice(0,135),60,1160);out.toBlob(blob=>{if(!blob)return;const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`RE-ANSAN-${site.id}-${r.id}.png`;a.click();setTimeout(()=>URL.revokeObjectURL(url),5000);setStatus('photoSaved');});}
+$('language').onclick=()=>{lang=lang==='ko'?'zh':'ko';localStorage.setItem('re2-language',lang);if($('dialog').open)$('dialog').close();language();};$('start').onclick=()=>openSite('lake');$('homeBtn').onclick=home;$('brand').onclick=e=>{e.preventDefault();home();};$('mapReturn').onclick=home;$('reset').onclick=reset;$('cameraBtn').onclick=toggleCamera;$('nextBtn').onclick=()=>{const next=sites[sites.indexOf(site)+1];next?openSite(next.id):home();};$('sourcesBtn').onclick=sources;$('compareBtn').onclick=compare;$('saveBtn').onclick=save;$('settingsBtn').onclick=settings;$('aboutBtn').onclick=()=>showDialog(`<p class="eyebrow">PUBLIC INTERACTIVE VIDEO</p><h2>${esc(t('aboutTitle'))}</h2><p>${esc(t('aboutCopy'))}</p><p>${esc(t('privacy'))}</p>`);$('checkBtn').onclick=checkModel;$('closeDialog').onclick=()=>$('dialog').close();$('dialog').addEventListener('close',()=>setSoundGain(active&&phase==='flow'));$('fullscreen').onclick=async()=>{try{document.fullscreenElement?await document.exitFullscreen():await document.documentElement.requestFullscreen();}catch(e){setStatus('cameraOther',e.message);}};
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('dialog').open)home();if(e.key.toLowerCase()==='r'&&active&&!$('dialog').open)reset();});window.addEventListener('pagehide',()=>hands.stop(false));document.addEventListener('visibilitychange',()=>{if(document.hidden){setSoundGain(false);onHand(null);}else setSoundGain(active&&phase==='flow'&&!$('dialog').open);});
+const stageHome=document.createElement('button');stageHome.id='stageHome';stageHome.className='glass';stageHome.dataset.i18n='backMap';stageHome.onclick=home;$('sourcesBtn').before(stageHome);
+const stageNext=document.createElement('button');stageNext.className='glass';stageNext.id='stageNext';stageNext.dataset.i18n='next';stageNext.onclick=()=>$('nextBtn').click();document.querySelector('.scene-foot').append(stageNext);
+for(const event of ['pointerdown','pointermove','keydown','touchstart'])document.addEventListener(event,()=>activity=performance.now(),{passive:true});
+language();home();requestAnimationFrame(draw);
