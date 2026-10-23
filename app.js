@@ -1,4 +1,4 @@
-import {sites,messages} from './data.js';
+import {sites,messages} from './data.js?v=cover-20261023';
 import {HandController,createModel,clamp} from './hand.js';
 import {LightTrail} from './effects.js';
 import {initSatellite} from './satellite.js';
